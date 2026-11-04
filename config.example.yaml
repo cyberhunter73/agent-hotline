@@ -1,0 +1,44 @@
+# agent-hotline example configuration.
+# Copy to config.yaml (gitignored) and fill in your values. See SETUP.md.
+
+telephony_provider: telnyx
+agent_backend: claude-agent-sdk
+
+# Speech-to-text. The device must be set explicitly; "auto" is rejected because
+# auto-detection can crash on a missing CUDA/cuBLAS DLL.
+stt:
+  engine: faster-whisper
+  device: cpu
+
+# Text-to-speech.
+tts:
+  engine: kokoro
+  voice: af_heart
+
+inbound:
+  # Caller-ID allowlist. Coarse pre-filter only: caller ID is spoofable.
+  allowed_numbers:
+    - "+15551234567"
+  quit_phrases:
+    - "goodbye"
+    - "end call"
+  silence_timeout_s: 30
+  max_call_length_s: 1800
+
+outbound:
+  # Outbound calls are OFF unless explicitly enabled. Absent means false.
+  enabled: false
+  destination_number: "+15557654321"
+  # Rolling 24-hour cap, enforced by the worker itself.
+  max_calls_per_24h: 3
+  quiet_hours:
+    start: "22:00"
+    end: "07:00"
+    timezone: "America/New_York"
+  # Only event types listed here can ever place a call. Anything else is logged,
+  # never dialed. urgent: true lets the call bypass quiet hours.
+  event_types:
+    approval-needed:
+      urgent: false
+    critical-error:
+      urgent: true
