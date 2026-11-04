@@ -51,15 +51,30 @@ decision at that point); it does not block waiting for that decision inside
 the same generator, since the human's answer arrives later via a separate
 call to `resolve_tool_use`, not by continuing to iterate the same `send_text`
 call.
+
+The background task driving `client.send_message()` (the "pump") and the
+queue it feeds are therefore kept as session-lifetime instance state, not
+local to one `send_text()` call: a paused turn's pump keeps running after
+`send_text()` returns early, and a later `send_text()` call (once the human
+has answered via `resolve_tool_use()`) reattaches to that same pump/queue to
+deliver whatever the agent produces next, instead of starting a brand-new
+turn on top of one that is still in flight.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from typing import Any, Callable
 
 from agent_hotline.agents.base import AgentBackend, AgentEvent, TextReply, ToolUseRequest
+
+# Sentinel marking "this turn's pump is finished" on the event queue. Needs to
+# be a single stable object (not one created fresh per send_text() call),
+# since a pump started by one send_text() call is routinely drained by a
+# later one once a paused tool-use turn is resolved and resumes.
+_PUMP_DONE = object()
 
 
 class AdapterConfigError(Exception):
@@ -109,6 +124,7 @@ class ClaudeAgentSdkBackend(AgentBackend):
         self._client: Any | None = None
         self._event_queue: asyncio.Queue[Any] | None = None
         self._pending_decision: asyncio.Future[bool] | None = None
+        self._pump_task: asyncio.Task[None] | None = None
 
     async def start_session(self) -> None:
         self._client = self._client_factory()
@@ -124,6 +140,11 @@ class ClaudeAgentSdkBackend(AgentBackend):
         """
         loop = asyncio.get_running_loop()
         self._pending_decision = loop.create_future()
+        # self._event_queue is always set by send_text() before
+        # client.send_message() (and therefore this callback) can ever run,
+        # so this should never actually be None. The guard is defensive
+        # only, in case a misbehaving client invoked the callback outside of
+        # a send_text() call.
         if self._event_queue is not None:
             await self._event_queue.put(ToolUseRequest(description=description))
         return await self._pending_decision
@@ -132,35 +153,61 @@ class ClaudeAgentSdkBackend(AgentBackend):
         if self._client is None:
             raise RuntimeError("start_session() must be called before send_text()")
 
-        self._event_queue = asyncio.Queue()
-        sentinel: object = object()
+        if self._pump_task is None or self._pump_task.done():
+            if self._pump_task is not None:
+                # Surface (rather than silently swallow) any exception from
+                # a previous turn's pump task before replacing it.
+                self._pump_task.result()
 
-        async def pump() -> None:
-            try:
-                async for chunk in self._client.send_message(text):
-                    await self._event_queue.put(TextReply(text=chunk))
-            finally:
-                await self._event_queue.put(sentinel)
+            # `queue` is a local the pump closes over directly, instead of
+            # reading `self._event_queue` back out on every put(). That is
+            # the fix for the bug this replaced: send_text() used to null
+            # out self._event_queue as soon as it returned early on a
+            # ToolUseRequest, but the backgrounded pump task (deliberately
+            # left running past that point, see the module docstring) would
+            # then crash with AttributeError the moment it next tried to
+            # queue.put() — which, for any client that keeps producing
+            # output after a tool-use permission is granted, is immediately,
+            # not just in some edge case. Closing over a stable local
+            # reference means pump() is correct regardless of whatever
+            # self._event_queue is reassigned to later.
+            queue: asyncio.Queue[Any] = asyncio.Queue()
+            self._event_queue = queue
 
-        pump_task = asyncio.create_task(pump())
-        try:
-            while True:
-                item = await self._event_queue.get()
-                if item is sentinel:
-                    return
-                yield item
-                if isinstance(item, ToolUseRequest):
-                    # The turn is now paused on a pending permission
-                    # decision (see _handle_can_use_tool). Stop here rather
-                    # than block this generator on that decision:
-                    # resolve_tool_use() answers it, and pump_task (left
-                    # running in the background) completes on its own once
-                    # that answer arrives.
-                    return
-        finally:
-            self._event_queue = None
+            async def pump() -> None:
+                try:
+                    async for chunk in self._client.send_message(text):
+                        await queue.put(TextReply(text=chunk))
+                finally:
+                    await queue.put(_PUMP_DONE)
+
+            self._pump_task = asyncio.create_task(pump())
+        else:
+            # A previous send_text() call already returned early on a
+            # ToolUseRequest from this same turn; its pump task is still
+            # running (paused on the pending decision). Keep draining the
+            # same queue instead of starting a second, concurrent turn.
+            queue = self._event_queue
+
+        while True:
+            item = await queue.get()
+            if item is _PUMP_DONE:
+                return
+            yield item
+            if isinstance(item, ToolUseRequest):
+                # The turn is now paused on a pending permission decision
+                # (see _handle_can_use_tool). Stop here rather than block
+                # this generator on that decision: resolve_tool_use()
+                # answers it, the pump task (left running in the
+                # background) resumes on its own once that answer arrives,
+                # and the next send_text() call drains whatever it produces.
+                return
 
     async def resolve_tool_use(self, approved: bool) -> None:
+        # Forwarding to the client is harmless even if nothing is actually
+        # pending (e.g. a caller bug calling this with no outstanding
+        # ToolUseRequest); resolving the local future is simply skipped when
+        # there isn't one.
         if self._client is not None:
             await self._client.answer_can_use_tool(approved)
         if self._pending_decision is not None and not self._pending_decision.done():
@@ -173,6 +220,11 @@ class ClaudeAgentSdkBackend(AgentBackend):
             # than leave it dangling across session teardown.
             self._pending_decision.cancel()
         self._pending_decision = None
+        if self._pump_task is not None and not self._pump_task.done():
+            self._pump_task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._pump_task
+        self._pump_task = None
         self._event_queue = None
         if self._client is not None:
             await self._client.disconnect()
