@@ -11,11 +11,19 @@ not tautologies:
   list fresh on every call. That is what makes the cross-task continuation
   contract ("a second send_text() after resolve_tool_use() drains the SAME
   paused turn's follow-up events") testable here at all.
-- `ScriptedAudioSource`/`FakeEars` clamp to their last scripted entry once
-  exhausted rather than raising or going silent, so a test can supply one
-  caller utterance and have it stand in for an answer to a later permission
-  prompt too, without needing a distinct scripted entry for every single
-  read the loop happens to perform.
+- `ScriptedAudioSource`/`FakeEars` repeat their last scripted entry for
+  exactly one read beyond the end of the script — one "grace" read — and
+  then go genuinely silent (a missing chunk / a non-speech transcript) for
+  every read after that. The grace read exists only so a test can script a
+  single caller utterance and have it double as the answer to a permission
+  prompt that utterance itself triggers (the brief's own given
+  `test_tool_use_request_routed_through_permission_gate_and_resolved` does
+  exactly this with one-item lists), without the fakes clamping forever —
+  which would require the production loop to invent an "empty turn ends the
+  call" rule just to keep a test from hanging. Tests that need more than one
+  real read beyond the initial turn (e.g. a tool-use exchange followed by
+  another real caller turn) should size their scripted lists to the exact
+  number of reads they need, rather than relying on the grace read.
 - `SilentAudioSource`, `InfiniteAudioSource`, `CancellingAudioSource`, and
   `GoesSilentAfterFirstChunkAudioSource` are single-purpose and do not
   clamp/repeat the same way; each is built to exercise exactly one of the
@@ -80,20 +88,26 @@ class FakeAgent:
 
 class FakeEars:
     """Stands in for `Ears`. Ignores the audio bytes it is given entirely
-    and pops its own scripted transcript list instead, clamping to the last
-    entry once exhausted rather than raising."""
+    and pops its own scripted transcript list instead. Repeats the last
+    entry for exactly one read beyond the script (see module docstring),
+    then reports non-speech (not just an empty string) for every read after
+    that, so a test that over-reads a `FakeEars` gets a transcript
+    `evaluate_answer`/the silence check genuinely treat as "no real speech"
+    rather than a coincidentally-empty one."""
 
     def __init__(self, transcripts: list[str]):
         self._transcripts = list(transcripts)
-        self._index = 0
+        self._calls = 0
 
     async def listen(self, audio: bytes) -> TranscriptResult:
+        call = self._calls
+        self._calls += 1
+        text = ""
         if self._transcripts:
-            index = min(self._index, len(self._transcripts) - 1)
-            text = self._transcripts[index]
-            self._index += 1
-        else:
-            text = ""
+            if call <= len(self._transcripts) - 1:
+                text = self._transcripts[call]
+            elif call == len(self._transcripts):
+                text = self._transcripts[-1]  # one grace repeat
         likely_speech = bool(text)
         return TranscriptResult(
             text=text,
@@ -125,19 +139,24 @@ class FakeAudioSink:
 
 class ScriptedAudioSource:
     """Stands in for `AudioSource`, yielding one dummy chunk per scripted
-    entry and then clamping to the last chunk forever once exhausted (see
-    module docstring)."""
+    entry, repeating the last chunk for exactly one grace read beyond the
+    script, and then going genuinely silent (`None`) for every read after
+    that (see module docstring)."""
 
     def __init__(self, transcripts: list[str]):
         self._chunks = [f"chunk:{t}".encode() for t in transcripts]
-        self._index = 0
+        self._calls = 0
 
     async def receive_chunk(self) -> bytes | None:
+        call = self._calls
+        self._calls += 1
         if not self._chunks:
             return None
-        index = min(self._index, len(self._chunks) - 1)
-        self._index += 1
-        return self._chunks[index]
+        if call <= len(self._chunks) - 1:
+            return self._chunks[call]
+        if call == len(self._chunks):
+            return self._chunks[-1]  # one grace repeat
+        return None  # genuinely silent from here on
 
 
 class SilentAudioSource:
@@ -223,7 +242,11 @@ async def test_tool_use_approval_continues_draining_for_follow_up_text_reply():
     agent = FakeAgent(events=[ToolUseRequest(description="read a file"), TextReply(text="done!")])
     mouth = FakeMouth()
     sink = FakeAudioSink()
-    source = ScriptedAudioSource(transcripts=["x"])
+    # Three reads are needed here (initial turn, permission answer, next
+    # turn) — sized exactly, so this test does not depend on either fake's
+    # one-read grace repeat (that mechanism exists only for the brief's own
+    # given test, which scripts just one caller utterance for both roles).
+    source = ScriptedAudioSource(transcripts=["x", "y", "z"])
     result = await run_call_session(
         agent,
         FakeEars(transcripts=["please read the file", "yes", "goodbye"]),
@@ -236,6 +259,35 @@ async def test_tool_use_approval_continues_draining_for_follow_up_text_reply():
     )
     assert agent.last_tool_decision is True
     assert "done!" in mouth.spoken
+    assert result.status == "quit_phrase"
+
+
+@pytest.mark.asyncio
+async def test_unclear_permission_answer_reprompts_then_resolves_normally():
+    """Brief requirement: "loop on UNCLEAR (ask again) rather than denying".
+    An answer evaluate_answer resolves to UNCLEAR must not deny the tool use
+    and must not end the call — it must trigger the re-prompt and keep
+    listening until a real yes/no comes back."""
+    agent = FakeAgent(events=[ToolUseRequest(description="read a file")])
+    mouth = FakeMouth()
+    # Four reads: initial turn, an unclear answer, a re-prompt-triggered
+    # second answer attempt that actually approves, and (since the loop
+    # keeps going afterward) one more read — sized exactly, no grace reads
+    # relied on.
+    source = ScriptedAudioSource(transcripts=["a", "b", "c", "d"])
+    ears = FakeEars(transcripts=["please read the file", "what do you mean by that", "yes", "goodbye"])
+    result = await run_call_session(
+        agent,
+        ears,
+        mouth,
+        source,
+        FakeAudioSink(),
+        quit_phrases=["goodbye"],
+        silence_timeout_s=30,
+        max_call_length_s=1800,
+    )
+    assert agent.last_tool_decision is True
+    assert any("didn't catch" in spoken for spoken in mouth.spoken)
     assert result.status == "quit_phrase"
 
 

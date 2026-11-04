@@ -37,6 +37,23 @@ never completed.
 `CallResult("cancelled")` — it must never fall into the generic
 `except Exception` branch and come out as `"error"` (see lesson #5 in the
 plan this task implements).
+
+A caller turn that produces zero agent events (no `TextReply`, no
+`ToolUseRequest` at all) is NOT treated as the call ending. `AgentEvent`
+(agents/base.py) has no signal by which the agent can say "I'm ending this
+call" on its own initiative — `send_message()` on the real adapter can
+legitimately yield nothing for a turn for reasons that have nothing to do
+with the conversation being over (a model hiccup, a filtered/empty
+response). Ending the whole call on that signal would silently hang up on
+a caller whenever the agent happened to go quiet for a turn. So an
+empty turn is treated the same as the agent choosing to say nothing right
+now: the loop just goes back to listening for the caller's next utterance.
+One consequence worth being explicit about: as of this module, nothing
+reachable from `run_call_session` ever produces `CallResult("completed")`
+— that status exists in the interface but has no production code path
+here, since there is no "the agent is done" signal to drive it from. That
+is intentional, not an oversight; a future task that adds such a signal to
+`AgentEvent` would be the place to wire it up.
 """
 
 from __future__ import annotations
@@ -105,7 +122,7 @@ async def run_call_session(
             if _matches_quit_phrase(transcript.text, quit_phrases):
                 return CallResult(status="quit_phrase")
 
-            turn_had_event = await _drive_agent_turn(
+            await _drive_agent_turn(
                 agent=agent,
                 text=transcript.text,
                 mouth=mouth,
@@ -115,10 +132,8 @@ async def run_call_session(
                 silence_timeout_s=silence_timeout_s,
                 time_exhausted=time_exhausted,
             )
-            if not turn_had_event:
-                # The agent had nothing at all to say to a fresh caller
-                # utterance: nothing left to drive the call forward with.
-                return CallResult(status="completed")
+            # A turn producing zero agent events is not an end-of-call
+            # signal (see module docstring) — just go back to listening.
     except asyncio.CancelledError:
         return CallResult(status="cancelled")
     except Exception:
@@ -164,25 +179,20 @@ async def _drive_agent_turn(
     audio_sink: AudioSink,
     silence_timeout_s: int,
     time_exhausted,
-) -> bool:
+) -> None:
     """Drain one caller turn, including any tool-use round trips within it.
 
-    Returns whether the agent produced at least one event (`TextReply` or
-    `ToolUseRequest`) across the whole turn, so the caller can tell "the
-    agent had nothing to say" apart from "the agent spoke and/or asked for
-    a tool".
+    A turn producing zero events (no `TextReply`, no `ToolUseRequest`) is a
+    no-op here, by design — see the module docstring for why that must not
+    be mistaken for "the call is over".
     """
-    had_event = False
     while True:
         if time_exhausted():
-            # Let the outer loop's own check report this on its next pass;
-            # returning True here just avoids this turn being mistaken for
-            # one where the agent had nothing to say.
-            return True
+            # Let the outer loop's own check report this on its next pass.
+            return
 
         paused_on_tool_use = False
         async for event in agent.send_text(text):
-            had_event = True
             if isinstance(event, TextReply):
                 await _speak(mouth, audio_sink, event.text)
             elif isinstance(event, ToolUseRequest):
@@ -200,7 +210,7 @@ async def _drive_agent_turn(
                 break
 
         if not paused_on_tool_use:
-            return had_event
+            return
 
         # Reattach to the same paused turn (see agents/base.py and
         # agents/claude_agent_sdk.py's module docstring): the text argument
