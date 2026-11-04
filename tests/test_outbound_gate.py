@@ -9,7 +9,7 @@ ONLY; it must never bypass the unknown-event-type rejection or the rate limit.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from agent_hotline.config import EventTypeConfig, OutboundConfig, QuietHours
 from agent_hotline.outbound_gate import OutboundDecision, OutboundGate
@@ -110,6 +110,30 @@ def test_quiet_hours_wrap_boundary_exactly_at_end_is_outside():
         clock=lambda: datetime(2026, 11, 4, 7, 0),
     )
     assert gate.decide("approval-needed", []) == OutboundDecision.CALL_NOW
+
+
+def test_call_exactly_24h_old_counts_toward_rate_limit():
+    # window_start = clock() - timedelta(hours=24); an entry exactly at that
+    # instant is inclusive per the brief and must still count.
+    now = datetime(2026, 11, 4, 12, 0)
+    history = [now - timedelta(hours=24)]
+    gate = OutboundGate(
+        make_config(max_calls=1, event_types={"approval-needed": EventTypeConfig(urgent=False)}),
+        clock=lambda: now,
+    )
+    assert gate.decide("approval-needed", history) == OutboundDecision.REJECTED_RATE_LIMIT
+
+
+def test_call_just_over_24h_old_does_not_count():
+    # One second further back than the exact 24h boundary falls just outside
+    # the window and must not count toward the rate limit.
+    now = datetime(2026, 11, 4, 12, 0)
+    history = [now - timedelta(hours=24, seconds=1)]
+    gate = OutboundGate(
+        make_config(max_calls=1, event_types={"approval-needed": EventTypeConfig(urgent=False)}),
+        clock=lambda: now,
+    )
+    assert gate.decide("approval-needed", history) == OutboundDecision.CALL_NOW
 
 
 def test_rate_limit_at_boundary_count_not_exceeded_calls_now():
