@@ -286,18 +286,17 @@ async def entrypoint(ctx: "JobContext") -> None:
     ears = make_ears(config.stt)
     mouth = make_mouth(config.tts)
 
-    def client_factory():
-        # Imported lazily so importing this module never requires the real
-        # Claude Agent SDK (same pattern as agents/claude_agent_sdk.py).
+    def client_factory(options):
+        # claude_agent_sdk is a declared, installed dependency (unlike
+        # livekit-agents), so this import is not strictly required to be
+        # lazy, but keeping it local to the factory mirrors the pattern
+        # used for the LiveKit-specific pieces in this module and keeps
+        # this function's only job "turn options into a real client".
         from claude_agent_sdk import ClaudeSDKClient  # type: ignore[import-not-found]
 
-        return ClaudeSDKClient()
+        return ClaudeSDKClient(options=options)
 
-    agent = ClaudeAgentSdkBackend(
-        client_factory=client_factory,
-        permission_mode="ask",
-        always_allow_rules=[],
-    )
+    agent = ClaudeAgentSdkBackend(client_factory=client_factory)
 
     audio_source = _RoomAudioSource(track=None)
     audio_sink = _RoomAudioSink(source=None)
