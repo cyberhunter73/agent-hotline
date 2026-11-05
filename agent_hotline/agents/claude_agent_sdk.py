@@ -75,17 +75,31 @@ Construction-time and pre-connect re-assertion. `__init__` builds the pinned
 `ClaudeAgentOptions` once. `start_session` calls `client_factory(options)` —
 the factory now receives the constructed options, rather than being called
 with no arguments — and then, immediately before `connect()`, re-asserts
-that the SAME options object this adapter built still satisfies the
-zero-always-allow invariant. This closes the gap a prior review flagged:
-without the re-check, a `client_factory` could theoretically mutate or
-discard the options it was handed (these are plain, non-frozen dataclasses)
-and nothing downstream would notice. `AdapterConfigError` is raised if the
-re-check ever fails; today nothing in this codebase can make that happen,
-so in practice this is a self-test against future regressions, not a
-check against untrusted caller input (there is no caller-supplied
-`permission_mode`/`always_allow_rules` left to validate — the whole point of
-this rewrite is that the adapter pins these itself and no longer exposes a
-way to misconfigure them).
+the invariant against the options object the RETURNED CLIENT actually
+holds (`client.options`, the real `ClaudeSDKClient`'s own public attribute),
+checked by identity against the object this adapter built, not merely
+re-checked against `self._options` in isolation. A second, scoped re-review
+caught that an earlier version of this check only re-verified
+`self._options` — which a factory that ignores its argument entirely
+(`lambda options: ClaudeSDKClient()`) or swaps in a different, weaker
+options object (`ClaudeSDKClient(options=dataclasses.replace(options,
+permission_mode="bypassPermissions"))`) would pass trivially, since
+`self._options` itself is never touched by either of those factories. The
+identity check (`client.options is self._options`) closes that: a factory
+that discards or replaces what it was handed raises `AdapterConfigError`
+immediately, before `connect()` ever runs. Today nothing in this codebase's
+own production `client_factory` (`worker.py`) can make this check fail —
+it correctly passes the same object straight through — so in practice this
+is a self-test against future regressions, not a check against untrusted
+caller input (there is no caller-supplied `permission_mode`/
+`always_allow_rules` left to validate — the whole point of this rewrite is
+that the adapter pins these itself and no longer exposes a way to
+misconfigure them). It does not, and cannot, validate SDK settings outside
+`ClaudeAgentOptions`'s five checked fields (e.g. `settings`, `extra_args`,
+`skills`, `hooks`, `plugins`) — a factory that smuggled an always-allow rule
+in through one of those would not be caught here; none of those fields are
+set anywhere in this codebase today, but this is a real, documented
+limitation of the invariant's scope, not a gap this module claims to close.
 
 Tests (`tests/test_claude_agent_sdk_adapter.py`) use the REAL
 `claude_agent_sdk.ClaudeAgentOptions`, `PermissionResultAllow`,
@@ -231,10 +245,31 @@ class ClaudeAgentSdkBackend(AgentBackend):
 
     async def start_session(self) -> None:
         client = self._client_factory(self._options)
-        # Re-assert the invariant on the SAME options object just handed to
-        # client_factory, immediately before connecting — closes the gap
-        # where a client_factory could mutate/ignore what it was given.
-        _assert_zero_always_allow_invariant(self._options)
+        # Re-assert the invariant immediately before connecting — closes the
+        # gap a prior review flagged: checking only `self._options` (the
+        # adapter's own object) proves nothing about what the returned
+        # `client` actually holds. A factory that ignores its argument
+        # entirely (e.g. `lambda options: ClaudeSDKClient()`) or swaps in a
+        # different, weaker options object (e.g.
+        # `ClaudeSDKClient(options=dataclasses.replace(options,
+        # permission_mode="bypassPermissions"))`) would pass a check against
+        # `self._options` alone, since `self._options` itself was never
+        # touched. The real `ClaudeSDKClient` stores the options it was given
+        # on the public `.options` attribute — require the returned client's
+        # `.options` to be the EXACT object this adapter built (identity, not
+        # equality: a factory that builds an equal-looking copy is just as
+        # unverifiable as one that discards it), then re-check that object's
+        # fields too.
+        client_options = getattr(client, "options", None)
+        if client_options is not self._options:
+            raise AdapterConfigError(
+                "client_factory returned a client whose .options is not the "
+                "exact ClaudeAgentOptions object this adapter built and "
+                "validated — a factory that discards or replaces the "
+                "options it was handed would otherwise bypass the "
+                "zero-always-allow check entirely"
+            )
+        _assert_zero_always_allow_invariant(client_options)
         await client.connect()
         self._client = client
 

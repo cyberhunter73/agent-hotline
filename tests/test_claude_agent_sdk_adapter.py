@@ -158,6 +158,38 @@ async def test_start_session_rejects_a_client_factory_that_mutates_options_befor
 
 
 @pytest.mark.asyncio
+async def test_start_session_rejects_a_client_factory_that_ignores_its_argument():
+    """A client_factory that discards the options it was handed and builds
+    a client around something else entirely (the original shape of the C1
+    bug — production's real client_factory used to do exactly this,
+    `ClaudeSDKClient()` with no arguments at all) must be caught by the
+    pre-connect re-check, not just a factory that mutates in place."""
+
+    def ignoring_factory(options: ClaudeAgentOptions):
+        # Never touches `options` — builds the fake client around a
+        # completely different ClaudeAgentOptions object instead.
+        return FakeSdkClient(ClaudeAgentOptions())
+
+    backend = ClaudeAgentSdkBackend(client_factory=ignoring_factory)
+    with pytest.raises(AdapterConfigError):
+        await backend.start_session()
+
+
+@pytest.mark.asyncio
+async def test_start_session_rejects_a_client_with_no_options_attribute():
+    """Defensive: a client object with no `.options` attribute at all must
+    fail closed, not be treated as trivially satisfying the invariant."""
+
+    class ClientWithNoOptionsAttribute:
+        async def connect(self) -> None:
+            raise AssertionError("must never reach connect()")
+
+    backend = ClaudeAgentSdkBackend(client_factory=lambda options: ClientWithNoOptionsAttribute())
+    with pytest.raises(AdapterConfigError):
+        await backend.start_session()
+
+
+@pytest.mark.asyncio
 async def test_send_text_yields_tool_use_request_from_can_use_tool_callback():
     holder: list[FakeSdkClient] = []
     backend = ClaudeAgentSdkBackend(client_factory=_factory(holder))

@@ -46,7 +46,9 @@ from agent_hotline.outbound_gate import OutboundDecision, OutboundGate
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HISTORY_PATH = str(Path.home() / ".agent-hotline" / "outbound_calls.sqlite3")
+# Note: the default history path lives in `config.py`'s `OutboundConfig.history_path`
+# (and its loader) — not duplicated here. This module takes the path as an
+# explicit argument wherever it's needed.
 
 
 class SipClient(Protocol):

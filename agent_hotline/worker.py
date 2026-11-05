@@ -59,10 +59,14 @@ this task leaves untested:
   rollout testing against a real call must re-check first.
 
 Outbound trunk id judgment call (carried forward from Task 7, where
-`OutboundNotifier.__init__` defaults `trunk_id` to the literal placeholder
-string `"trunk-id"`, with a comment flagging that the real value must be
-wired before any live use — see outbound.py). `OutboundConfig` (Task 1) has
-no trunk id field. Two reasonable options:
+`OutboundNotifier.__init__` originally defaulted `trunk_id` to the literal
+placeholder string `"trunk-id"`, with a comment flagging that the real
+value must be wired before any live use — see outbound.py; the fix wave's
+M5 later removed that placeholder default entirely and made `trunk_id` a
+required keyword-only argument, since this module's `_outbound_trunk_id()`
+below means production never had anything to fall back to in the first
+place). `OutboundConfig` (Task 1) has no trunk id field. Two reasonable
+options were considered:
 
   (a) Read it from an environment variable, matching this project's
       existing pattern for LiveKit deployment credentials
@@ -74,13 +78,13 @@ no trunk id field. Two reasonable options:
 
 This module chooses (a): `_outbound_trunk_id()` below reads
 `LIVEKIT_SIP_OUTBOUND_TRUNK_ID` from the environment and raises
-`WorkerConfigError` if it is unset, rather than silently falling back to
-`OutboundNotifier`'s placeholder default — a real outbound call must never
-go out against a placeholder trunk id. (b) was not chosen because it would
-mean editing a Task 1 file for a decision that is really about deployment
-configuration, not call-safety policy; it remains a reasonable alternative
-if a future task decides config-file placement is preferable for this
-project.
+`WorkerConfigError` if it is unset — a real outbound call must never go out
+against a placeholder trunk id, which is now structurally impossible rather
+than merely avoided, since `OutboundNotifier` no longer has one to fall
+back to. (b) was not chosen because it would mean editing a Task 1 file for
+a decision that is really about deployment configuration, not call-safety
+policy; it remains a reasonable alternative if a future task decides
+config-file placement is preferable for this project.
 """
 
 from __future__ import annotations
@@ -358,16 +362,18 @@ def _outbound_trunk_id() -> str:
     """Read the real outbound SIP trunk id from the environment.
 
     See the module docstring's "Outbound trunk id judgment call" section:
-    this is deliberately NOT read from `OutboundConfig`, and deliberately
-    does not fall back to `OutboundNotifier`'s placeholder default — a
-    missing trunk id must fail loudly here, not place a real call to
-    nowhere.
+    this is deliberately NOT read from `OutboundConfig` — a missing trunk id
+    must fail loudly here, not place a real call to nowhere. (`OutboundNotifier`
+    no longer has a placeholder default to fall back to at all — `trunk_id`
+    is a required keyword-only argument there since the fix wave's M5 — so
+    this function's own `WorkerConfigError` is the only thing standing
+    between an unset env var and `OutboundNotifier.__init__` simply raising
+    `TypeError` for a missing required argument instead.)
     """
     trunk_id = os.environ.get(_TRUNK_ID_ENV_VAR)
     if not trunk_id:
         raise WorkerConfigError(
-            f"{_TRUNK_ID_ENV_VAR} must be set to a real LiveKit SIP outbound trunk id; "
-            "refusing to fall back to OutboundNotifier's placeholder default"
+            f"{_TRUNK_ID_ENV_VAR} must be set to a real LiveKit SIP outbound trunk id"
         )
     return trunk_id
 

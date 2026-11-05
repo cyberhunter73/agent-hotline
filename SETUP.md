@@ -220,11 +220,12 @@ Check each of the following on real calls. Record each result.
 
 - [ ] **Allowlist admits a listed caller.** Call from the allowlisted number. The call reaches the agent.
 - [ ] **Allowlist rejects an unlisted caller.** Call from a different phone that is not on the list. The worker plays the brush-off and never starts a session. Confirm the SIP participant is removed.
-- [ ] **Ask-mode permission prompts work over call audio.** Ask the agent to do something that triggers a tool use. It should speak the request and wait for an answer.
+- [ ] **Permission prompts work over call audio.** Ask the agent to do something that triggers a tool use (e.g. run a command, edit a file). It should speak the request and wait for an answer.
   - [ ] Answer "yes" and confirm the tool runs.
   - [ ] Answer "no" and confirm the tool does not run.
   - [ ] Stay silent and confirm no tool runs (silence is a denial).
   - [ ] Ask a clarifying question instead of answering and confirm the agent reprompts rather than denying outright.
+  - [ ] **Ask the agent to read a file out loud (a read-only tool, e.g. "read me the contents of X").** This is the one safety property this build cannot verify without a live call: whether the installed Claude CLI's own default permission rules already permit some read-only tools without ever consulting this project's spoken gate. **It MUST speak a permission prompt and wait for your answer before reading anything — if it reads the file without asking, stop using this build on any sensitive machine and open an issue.** This directly protects against a spoofed caller ID (see the caller-ID warning above) getting the agent to read something aloud with no gate at all.
 - [ ] **Barge-in cuts the agent off.** Interrupt the agent mid-reply and confirm it stops speaking and listens to you.
 - [ ] **Quit phrase ends the call and session cleanly.** Say `goodbye` (or `end call`). The call ends, the SIP participant is removed, and the session ends. Confirm the next call starts a fresh session with no memory of the previous one.
 - [ ] **Silence timeout fires.** Stay silent through a normal turn and confirm the call ends after `inbound.silence_timeout_s`.
