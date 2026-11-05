@@ -8,14 +8,21 @@ version = "0.1.0"
 description = "A phone line for a local Claude agent: inbound calls with a caller allowlist and spoken permission gate, plus rate-limited outbound notifications."
 license = { text = "MIT" }
 authors = [{ name = "Joseph Rubin" }]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 # Pinned reference stack. Each non-LiveKit piece sits behind a swappable interface.
 dependencies = [
     "livekit-agents~=1.8.10",
     "claude-agent-sdk~=0.2.178",
     "faster-whisper~=1.2.1",
     # Kokoro TTS. The PyPI distribution name is "kokoro"; no code in task 1 imports it.
-    "kokoro~=0.7.16",
+    # Pinned to exactly 0.7.4: every kokoro release above this (up to at least
+    # 0.7.16) declares a dependency on a "misaki" version that was never
+    # published to PyPI (misaki tops out at 0.7.4), so those releases cannot
+    # be installed at all. 0.7.4 is the newest version whose own misaki
+    # requirement (>=0.7.4) is actually satisfiable. kokoro==0.7.4 in turn
+    # hard-pins numpy==1.26.4, which has no Python 3.13 wheel on PyPI -
+    # hence the requires-python upper bound above.
+    "kokoro==0.7.4",
     "pyyaml~=6.0",
     # Windows does not ship IANA tz data the way Linux/macOS typically do, so
     # `zoneinfo.ZoneInfo` (used to validate and honor `quiet_hours.timezone`

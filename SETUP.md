@@ -58,7 +58,7 @@ Keep the outbound trunk ID handy. The worker reads it from an environment variab
 
 ## Step 3: Install the package and its dependencies
 
-**Requirements:** Python 3.11 or newer (`requires-python = ">=3.11"`). The virtual environment below is recommended. It is gitignored as `.venv/`.
+**Requirements:** Python 3.11 or 3.12 (`requires-python = ">=3.11,<3.13"`). Python 3.13 is not supported yet: the pinned `kokoro==0.7.4` hard-requires `numpy==1.26.4`, which has no published Python 3.13 wheel, so installing on 3.13 means building numpy from source (needs a C/C++ toolchain) or fails outright on most machines. The virtual environment below is recommended. It is gitignored as `.venv/`.
 
 From the repository root:
 
@@ -78,7 +78,7 @@ This installs the runtime dependencies pinned in `pyproject.toml`. You do not ne
 | `livekit-agents` | `~=1.8.10` | LiveKit Agents worker and SIP client |
 | `claude-agent-sdk` | `~=0.2.178` | Default agent backend |
 | `faster-whisper` | `~=1.2.1` | Speech-to-text |
-| `kokoro` | `~=0.7.16` | Text-to-speech (PyPI distribution name is `kokoro`) |
+| `kokoro` | `==0.7.4` | Text-to-speech (PyPI distribution name is `kokoro`) |
 | `pyyaml` | `~=6.0` | Config loading |
 | `pytest` (dev) | `~=9.2` | Tests |
 | `pytest-asyncio` (dev) | `~=1.4` | Async tests (strict mode) |
