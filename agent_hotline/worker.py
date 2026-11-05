@@ -372,6 +372,30 @@ def _outbound_trunk_id() -> str:
     return trunk_id
 
 
+def _quiet_hours_clock(tz_name: str) -> Callable[[], "datetime"]:
+    """Build a clock returning the current, timezone-aware time in
+    `tz_name` (an IANA zone name, e.g. `"America/New_York"`).
+
+    I4 fix, extracted as its own small function (rather than inlined in
+    `build_outbound_notifier`) specifically so it can be unit tested
+    without requiring `livekit-agents` to be installed: the quiet-hours
+    comparison in `outbound_gate.py` must be evaluated against the
+    timezone the user configured, not whatever timezone the host machine
+    running the worker process happens to be in. `config.py` validates
+    `tz_name` with the same `zoneinfo.ZoneInfo` constructor at config-load
+    time (see M1/I4), so by the time this runs the name is already known
+    good.
+    """
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo(tz_name)
+
+    def clock() -> "datetime":
+        return datetime.now(zone)
+
+    return clock
+
+
 def build_outbound_notifier(config: Config, clock=None) -> OutboundNotifier:
     """Construct a real, live-call-capable `OutboundNotifier` from `Config`.
 
@@ -396,8 +420,6 @@ def build_outbound_notifier(config: Config, clock=None) -> OutboundNotifier:
     separate `python -m agent_hotline.worker notify ...` invocations, not
     just within one process's lifetime.
     """
-    from zoneinfo import ZoneInfo
-
     from livekit import api  # type: ignore[import-not-found]
 
     class _LiveKitSipClient:
@@ -414,12 +436,7 @@ def build_outbound_notifier(config: Config, clock=None) -> OutboundNotifier:
             finally:
                 await lk_api.aclose()
 
-    def _tz_aware_clock():
-        import datetime as _datetime
-
-        return _datetime.datetime.now(ZoneInfo(config.outbound.quiet_hours.timezone))
-
-    real_clock = clock or _tz_aware_clock
+    real_clock = clock or _quiet_hours_clock(config.outbound.quiet_hours.timezone)
 
     gate = OutboundGate(config.outbound, clock=real_clock)
     history_store = SqliteCallHistoryStore(config.outbound.history_path)

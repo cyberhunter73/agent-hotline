@@ -2,7 +2,8 @@ import threading
 
 import pytest
 
-from agent_hotline.mouth import Mouth
+from agent_hotline.config import TtsConfig
+from agent_hotline.mouth import Mouth, make_mouth
 
 
 class FakeTtsEngine:
@@ -25,3 +26,10 @@ async def test_mouth_speak_delegates_to_engine_off_loop():
     assert audio == b"wav-bytes"
     assert fake_engine.received_text == "hello"
     assert fake_engine.thread_name != threading.current_thread().name
+
+
+def test_make_mouth_rejects_empty_voice_with_clear_error():
+    """M1: an empty tts.voice must raise a clear error, not a bare
+    IndexError from config.voice[0]."""
+    with pytest.raises(ValueError, match="voice"):
+        make_mouth(TtsConfig(engine="kokoro", voice=""))

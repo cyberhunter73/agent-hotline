@@ -9,7 +9,8 @@ ONLY; it must never bypass the unknown-event-type rejection or the rate limit.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from agent_hotline.config import EventTypeConfig, OutboundConfig, QuietHours
 from agent_hotline.outbound_gate import OutboundDecision, OutboundGate
@@ -143,3 +144,20 @@ def test_rate_limit_at_boundary_count_not_exceeded_calls_now():
         clock=lambda: datetime(2026, 11, 4, 12, 0),
     )
     assert gate.decide("approval-needed", history) == OutboundDecision.CALL_NOW
+
+
+def test_quiet_hours_decision_depends_on_configured_timezone_not_host_clock():
+    """I4: the gate must honor whatever timezone-aware wall-clock time its
+    injected clock reports — not the host machine's own local timezone.
+    Same underlying UTC instant, two different configured timezones, two
+    different correct decisions: at this instant it is 23:00 in Tokyo
+    (inside the 22:00-07:00 quiet window) and 09:00 in New York (well
+    outside it)."""
+    instant_utc = datetime(2026, 11, 4, 14, 0, tzinfo=timezone.utc)
+    config = make_config(event_types={"approval-needed": EventTypeConfig(urgent=False)})
+
+    tokyo_gate = OutboundGate(config, clock=lambda: instant_utc.astimezone(ZoneInfo("Asia/Tokyo")))
+    assert tokyo_gate.decide("approval-needed", []) == OutboundDecision.QUEUE_FOR_LATER
+
+    new_york_gate = OutboundGate(config, clock=lambda: instant_utc.astimezone(ZoneInfo("America/New_York")))
+    assert new_york_gate.decide("approval-needed", []) == OutboundDecision.CALL_NOW

@@ -55,6 +55,11 @@ class _KokoroEngine:
 
 
 def make_mouth(config: TtsConfig) -> Mouth:
+    # M1: guard against an empty tts.voice with a clear error instead of a
+    # bare IndexError from config.voice[0] below.
+    if not config.voice:
+        raise ValueError("TtsConfig.voice must be a non-empty string; set tts.voice in your config")
+
     # Imported here so importing this module does not require kokoro.
     from kokoro import KPipeline
 
