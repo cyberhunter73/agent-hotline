@@ -12,16 +12,19 @@ Everything here is local. You run the worker on your own machine or server, usin
 
 | Gap in this build | What it means for you |
 |---|---|
-| Live audio capture/playback not implemented (`_RoomAudioSource` / `_RoomAudioSink` raise `NotImplementedError`) | No call can carry audio yet. Steps 5 through 7 cannot pass until this is wired. |
+| Live audio capture/playback not implemented (`_RoomAudioSource` / `_RoomAudioSink` raise `NotImplementedError`) | No call can carry audio yet. Steps 5 through 7 cannot pass until this is wired. **Barge-in** (interrupting the agent mid-reply) is the same gap — it cannot work without live audio either. |
 | No echo agent included | Step 5 needs one. You write it against `AgentBackend` (see step 5). |
-| Outbound rate limit is in memory only | Each `notify` CLI run starts with an empty call history, so the 24-hour cap does not hold across separate invocations or worker restarts. A burst run as separate commands will not be blocked. |
 | Queued quiet-hours notifications are not stored or re-sent | A trigger inside quiet hours returns `queue_for_later` and is dropped. Nothing calls later. |
-| `outbound.quiet_hours.timezone` is ignored | Quiet hours use the host machine's local clock. Set the machine's clock and timezone to match what you want. |
 | Outbound greeting not implemented | An outbound call, once it connects, has no "automated call from ..." opener. |
-| Per-call logging not implemented | There is no per-call transcript or direction log yet. Keep your own notes during tests. |
-| `telephony_provider`, `agent_backend`, `stt.engine`, `tts.engine` are not used to select implementations | Changing them does nothing. Leave them at the example values. |
+| Per-call transcript logging not implemented | The worker now logs a per-call summary record (caller, allowed yes/no, direction, start/end time, final status) and logs call errors/cancellations, but there is no per-call transcript yet. Keep your own notes on call content during tests. |
 
-Do not enable outbound (`outbound.enabled: true`) on any real number until you have read the outbound section of the Security model and understand the rate-limit and quiet-hours gaps above.
+Fixed since the first review (no longer gaps, but still worth knowing before you test):
+
+- **Outbound rate limit now persists across CLI invocations and restarts.** Call history is stored in a sqlite database at `outbound.history_path` (default `~/.agent-hotline/outbound_calls.sqlite3`). Two separate `notify` runs sharing that file correctly share the rate limit.
+- **`outbound.quiet_hours.timezone` is honored.** The real clock used by the outbound notifier and gate is timezone-aware, built from this field, not the host machine's local clock.
+- **`telephony_provider`, `agent_backend`, `stt.engine`, `tts.engine` are validated, not silently ignored.** Each is checked against an explicit allowed set at config-load time (currently exactly one implemented value per field — the example's values). An unimplemented value now raises `ConfigError` at load time instead of being accepted and doing nothing.
+
+Do not enable outbound (`outbound.enabled: true`) on any real number until you have read the outbound section of the Security model above.
 
 ---
 
@@ -110,22 +113,22 @@ Edit `config.yaml`, then work through each section below. Every field the exampl
 
 | Field | Example | What it does | If absent |
 |---|---|---|---|
-| `telephony_provider` | `telnyx` | Informational. Parsed, not used to select anything. | Defaults to `telnyx`. No effect either way. |
-| `agent_backend` | `claude-agent-sdk` | Informational. The worker always uses the Claude Agent SDK adapter. | Defaults to `claude-agent-sdk`. No effect either way. |
+| `telephony_provider` | `telnyx` | Validated at config-load time against the one value this codebase actually implements (`"telnyx"`). Any other value raises `ConfigError`. | Defaults to `telnyx`. |
+| `agent_backend` | `claude-agent-sdk` | Validated at config-load time against the one value this codebase actually implements (`"claude-agent-sdk"`). The worker always uses the Claude Agent SDK adapter. Any other value raises `ConfigError`. | Defaults to `claude-agent-sdk`. |
 
 ### `stt` (speech-to-text)
 
 | Field | Example | What it does | If absent |
 |---|---|---|---|
-| `stt.engine` | `faster-whisper` | Informational. `make_ears` always uses faster-whisper. | Defaults to `faster-whisper`. |
+| `stt.engine` | `faster-whisper` | Validated at config-load time against the one value this codebase actually implements (`"faster-whisper"`). `make_ears` always uses faster-whisper. Any other value raises `ConfigError`. | Defaults to `faster-whisper`. |
 | `stt.device` | `cpu` | Device passed to `WhisperModel`. Must be explicit. | If the `stt` section is present but `device` is missing, config load raises an error. If `device` is `auto`, config load raises an error (auto-detection can crash on a missing CUDA/cuBLAS DLL). If the whole `stt` section is absent, device is `None` and the worker's `make_ears` raises `ValueError` on every call. **Set `device: cpu` (or `cuda` if you have a working CUDA install).** |
 
 ### `tts` (text-to-speech)
 
 | Field | Example | What it does | If absent |
 |---|---|---|---|
-| `tts.engine` | `kokoro` | Informational. `make_mouth` always uses Kokoro. | Defaults to `kokoro`. |
-| `tts.voice` | `af_heart` | Kokoro voice. The first character is used as the Kokoro language code (`a` for American English). | Defaults to `af_heart`. |
+| `tts.engine` | `kokoro` | Validated at config-load time against the one value this codebase actually implements (`"kokoro"`). `make_mouth` always uses Kokoro. Any other value raises `ConfigError`. | Defaults to `kokoro`. |
+| `tts.voice` | `af_heart` | Kokoro voice. The first character is used as the Kokoro language code (`a` for American English). An empty string raises a clear `ValueError` from `make_mouth` rather than a bare `IndexError`. | Defaults to `af_heart`. |
 
 ### `inbound` (phone calls to your number)
 
@@ -143,11 +146,12 @@ Use your own test phone number for `allowed_numbers`. Caller ID is spoofable, so
 | Field | Example | What it does | If absent |
 |---|---|---|---|
 | `outbound.enabled` | `false` | Master switch. When `false`, `notify` never dials. Must be a real boolean; a string like `"false"` is a config error. | Defaults to **`false`**. Outbound is off unless you turn it on. |
-| `outbound.destination_number` | `"+15557654321"` | The one number outbound calls dial. | Defaults to an empty string. **The worker does not check this before dialing.** Set it before enabling outbound. |
-| `outbound.max_calls_per_24h` | `3` | Rolling 24-hour cap on placed calls. **In this build the count is held in memory per process and does not persist across CLI runs or restarts.** | Defaults to `1`. |
-| `outbound.quiet_hours.start` | `"22:00"` | Start of do-not-call window, `HH:MM`. Wrap-around past midnight is supported. | Defaults to `"22:00"`. |
-| `outbound.quiet_hours.end` | `"07:00"` | End of do-not-call window, `HH:MM`. | Defaults to `"07:00"`. |
-| `outbound.quiet_hours.timezone` | `"America/New_York"` | **Parsed but not used in this build.** Quiet hours follow the machine's local clock. | Defaults to `"UTC"`, which is also not used. |
+| `outbound.destination_number` | `"+15557654321"` | The one number outbound calls dial. Validated (non-empty, passes `normalize_number`) at config-load time **when `outbound.enabled` is true**; left unvalidated when outbound is off, since an unused placeholder shouldn't block loading. | Defaults to an empty string. Required (and validated) once you set `outbound.enabled: true`. |
+| `outbound.max_calls_per_24h` | `3` | Rolling 24-hour cap on placed calls, persisted to the sqlite store at `outbound.history_path` so it holds across separate CLI invocations and worker restarts. Must be a positive integer; `ConfigError` otherwise. | Defaults to `1`. |
+| `outbound.history_path` | `"~/.agent-hotline/outbound_calls.sqlite3"` | Where the persistent outbound call-history sqlite database lives. The parent directory is created automatically. | Defaults to `~/.agent-hotline/outbound_calls.sqlite3`. |
+| `outbound.quiet_hours.start` | `"22:00"` | Start of do-not-call window, `HH:MM`. Wrap-around past midnight is supported. Validated at config-load time; a malformed or out-of-range value raises `ConfigError`. | Defaults to `"22:00"`. |
+| `outbound.quiet_hours.end` | `"07:00"` | End of do-not-call window, `HH:MM`. Same validation as `start`. | Defaults to `"07:00"`. |
+| `outbound.quiet_hours.timezone` | `"America/New_York"` | An IANA timezone name, validated at config-load time via `zoneinfo.ZoneInfo` (`ConfigError` on an unrecognized name). Quiet hours are evaluated against THIS timezone, not the host machine's local clock. | Defaults to `"UTC"`. |
 | `outbound.event_types` | map (below) | The only event types that can ever place a call. | No event types listed means **every event type is rejected**. Nothing dials. |
 | `outbound.event_types.<name>.urgent` | `true` / `false` | `true` lets that event type bypass quiet hours. It does **not** bypass the event-type allowlist or the rate limit. | Defaults to `false`. |
 
@@ -254,8 +258,8 @@ Check each of the following:
 
 - [ ] **Valid event type places a real call.** Trigger `critical-error` outside quiet hours. The decision is `call_now`, and your test phone rings. The outbound greeting is **not implemented** in this build, so the call will not open with the automated-call message. Note that as a gap.
 - [ ] **Event type not on the allowlist never dials.** Trigger a name that is not in `event_types`, such as `made-up-event`. The decision is a rejection and no call is placed. Confirm no call came in.
-- [ ] **Rate limit blocks a burst.** Set `outbound.max_calls_per_24h` to `2` and trigger `critical-error` three times in quick succession. **Expected result in this build: the third call is not blocked**, because each CLI invocation starts with an empty history and the cap is not persisted. Record this as a failure. Do not treat the rate limit as working until this check passes.
-- [ ] **Quiet-hours trigger does not dial.** Set `outbound.quiet_hours` to a window that includes the current local time, then trigger `approval-needed` (non-urgent). Expected: the decision is `queue_for_later` and no call is placed. **Note that in this build the notification is not sent later.** The "queued for the next allowed window" half of this check cannot pass.
+- [ ] **Rate limit blocks a burst.** Set `outbound.max_calls_per_24h` to `2` and trigger `critical-error` three times in quick succession (three separate `notify` CLI invocations). Expected: the first two decisions are `call_now`, and the third is `rejected_rate_limit` — the sqlite-backed history at `outbound.history_path` now persists across separate CLI invocations, so this should actually pass. If the third call is not blocked, that is a real regression; do not proceed until it is fixed.
+- [ ] **Quiet-hours trigger does not dial.** Set `outbound.quiet_hours` to a window that includes the current time **in the configured `outbound.quiet_hours.timezone`** (not necessarily your own local time), then trigger `approval-needed` (non-urgent). Expected: the decision is `queue_for_later` and no call is placed. **Note that in this build the notification is not sent later** (see known gaps) — only the "do not dial now" half of this check can pass; the "queued for the next allowed window" half still cannot.
 - [ ] **Urgent event bypasses quiet hours.** With the same quiet window active, trigger `critical-error` (`urgent: true`). Expected: `call_now`, and the call rings, subject to the rate limit.
 
 Restore your real `outbound` settings and set `outbound.enabled: false` when testing is finished.
