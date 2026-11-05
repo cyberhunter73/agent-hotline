@@ -1,7 +1,7 @@
 # agent-hotline — Design Spec
 
 **Date:** 2026-11-04
-**Status:** Approved by Joseph for planning (brainstorming stage complete)
+**Status:** Approved for planning (brainstorming stage complete)
 
 ## Purpose
 
@@ -15,7 +15,7 @@ SDK) a real phone number, in both directions:
   waiting to be asked.
 
 This generalizes a private, already-proven system (internally called `telekit`, built
-2026-11-03 for Joseph's own assistant "Cortana") into something anyone can clone,
+2026-11-03 for the author's own personal AI assistant) into something anyone can clone,
 configure with their own phone number and agent, and run. The license is MIT.
 
 ## Background: what already exists and what's new
@@ -257,5 +257,5 @@ agent-hotline/
 
 New standalone repository, developed at
 `C:\Users\jrubi\Desktop\Claude-Works\PROJECTS\agent-hotline\` and pushed to a new public
-GitHub repo named `agent-hotline` under Joseph's own GitHub account, MIT licensed. Does
+GitHub repo named `agent-hotline` under the maintainer's own GitHub account, MIT licensed. Does
 not modify `telekit`, `backtalk`, or any other existing project.

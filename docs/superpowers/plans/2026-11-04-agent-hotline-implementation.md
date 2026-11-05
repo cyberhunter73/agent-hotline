@@ -93,7 +93,7 @@ Cover every field above with the values from the spec's example (allowlist of on
 
 - [ ] **Step 5: Write `pyproject.toml`, `LICENSE`, `.gitignore`**
 
-`pyproject.toml` declares the package and pinned dependencies: `livekit-agents`, `claude-agent-sdk`, `faster-whisper`, a Kokoro TTS package, `pyyaml`, `pytest` (dev). `LICENSE` is the standard MIT text with Joseph's name and 2026. `.gitignore` excludes `__pycache__/`, `.venv/`, `*.log`, local secrets files.
+`pyproject.toml` declares the package and pinned dependencies: `livekit-agents`, `claude-agent-sdk`, `faster-whisper`, a Kokoro TTS package, `pyyaml`, `pytest` (dev). `LICENSE` is the standard MIT text with the copyright holder's name and 2026. `.gitignore` excludes `__pycache__/`, `.venv/`, `*.log`, local secrets files.
 
 - [ ] **Step 6: Run tests to verify they pass**
 

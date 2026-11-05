@@ -21,7 +21,7 @@ Fixed in the latest fix wave, no longer a gap:
 - **Quiet-hours timezone is honored.** `build_outbound_notifier` constructs a timezone-aware clock from `outbound.quiet_hours.timezone` and uses it for both the gate's decision and the notifier's recorded call-history timestamps.
 - **Config fields are validated, not silently accepted.** `telephony_provider`, `agent_backend`, `stt.engine`, and `tts.engine` are checked against an explicit allowed set at config-load time (currently exactly one value each, since that is all this codebase implements) and `ConfigError` is raised for anything else, instead of being silently ignored.
 
-The 106 unit tests in `tests/` run with `claude-agent-sdk` installed (verified directly against its real API shape) but without the LiveKit SDK installed, and cover the config loader, allowlist, outbound gate and persistence, permission gate, call session loop, worker cleanup, and the Claude adapter's safety checks. They do not cover live audio or real calls.
+The 108 unit tests in `tests/` run with `claude-agent-sdk` installed (verified directly against its real API shape) but without the LiveKit SDK installed, and cover the config loader, allowlist, outbound gate and persistence, permission gate, call session loop, worker cleanup, and the Claude adapter's safety checks. They do not cover live audio or real calls.
 
 ## Architecture
 
