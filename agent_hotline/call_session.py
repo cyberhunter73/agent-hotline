@@ -71,6 +71,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -127,17 +128,40 @@ async def run_call_session(
             await agent.start_session()
             session_started = True
 
+            # I7: the call must only end on silence once genuinely no real
+            # speech has been heard for the FULL configured
+            # silence_timeout_s, measured from the last real speech (or
+            # call start) — not on the first non-speech chunk encountered.
+            # A prior version of this loop treated any single non-speech
+            # transcript as an immediate silence_timeout, even if it
+            # arrived a couple of seconds into a 30-second window (a cough
+            # or background noise partway through the window would hang up
+            # on the caller). last_speech_time tracks when the budget last
+            # reset; each read's own wait is bounded by whatever is LEFT of
+            # the window, not the full window every time.
+            last_speech_time = time.monotonic()
+
             while True:
                 if time_exhausted():
                     return CallResult(status="max_length")
 
-                chunk = await _receive_with_timeout(audio_source, silence_timeout_s)
+                remaining_silence_budget = silence_timeout_s - (time.monotonic() - last_speech_time)
+                if remaining_silence_budget <= 0:
+                    return CallResult(status="silence_timeout")
+
+                chunk = await _receive_with_timeout(audio_source, remaining_silence_budget)
                 if chunk is None:
                     return CallResult(status="silence_timeout")
 
                 transcript = await ears.listen(chunk)
                 if not transcript.is_likely_speech:
-                    return CallResult(status="silence_timeout")
+                    # Non-speech chunk: do not end the call yet. Keep
+                    # listening with whatever silence budget remains — the
+                    # call only ends once that budget is actually exhausted
+                    # (checked at the top of the next iteration).
+                    continue
+
+                last_speech_time = time.monotonic()
 
                 if _matches_quit_phrase(transcript.text, quit_phrases):
                     return CallResult(status="quit_phrase")
@@ -154,6 +178,7 @@ async def run_call_session(
                 )
                 # A turn producing zero agent events is not an end-of-call
                 # signal (see module docstring) — just go back to listening.
+                last_speech_time = time.monotonic()
     except TimeoutError:
         # Raised by the asyncio.timeout block above when max_call_length_s
         # elapses anywhere inside it — including mid-turn, not just at a
@@ -177,8 +202,13 @@ async def run_call_session(
 
 
 def _matches_quit_phrase(text: str, quit_phrases: list[str]) -> bool:
+    # M4: word-boundary matching, not a plain substring check — a plain
+    # substring check matches "bye" inside "maybe" or "goodbye" even when
+    # neither is a configured quit phrase on its own, and matches a
+    # configured phrase ("bye") inside an unrelated sentence that happens
+    # to contain it as a substring of a different word.
     lowered = text.lower()
-    return any(phrase.lower() in lowered for phrase in quit_phrases)
+    return any(re.search(rf"\b{re.escape(phrase.lower())}\b", lowered) for phrase in quit_phrases)
 
 
 async def _receive_with_timeout(audio_source: AudioSource, timeout_s: float) -> bytes | None:

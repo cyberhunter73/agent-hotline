@@ -29,8 +29,17 @@ def evaluate_answer(transcript: TranscriptResult | None) -> PermissionAnswer:
     if transcript is None or not transcript.is_likely_speech:
         return PermissionAnswer.DENY
 
+    # M3: check for trailing "?" before punctuation-stripping removes it.
+    # Whisper's rising-intonation transcription of a caller saying
+    # "yes...?" (thinking out loud, not committing) is a transcription
+    # artifact, not consent — a safety-conservative re-judgment of a prior
+    # product-level deferral.
+    ends_with_question_mark = transcript.text.rstrip().endswith("?")
+
     normalized = transcript.text.strip(_STRIP_CHARS).lower()
     if normalized == "yes":
+        if ends_with_question_mark:
+            return PermissionAnswer.UNCLEAR
         return PermissionAnswer.APPROVE
     if normalized in _DENY_WORDS:
         return PermissionAnswer.DENY

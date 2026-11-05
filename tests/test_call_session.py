@@ -38,7 +38,7 @@ import asyncio
 import pytest
 
 from agent_hotline.agents.base import TextReply, ToolUseRequest
-from agent_hotline.call_session import CallResult, run_call_session
+from agent_hotline.call_session import CallResult, _matches_quit_phrase, run_call_session
 from agent_hotline.ears import TranscriptResult
 
 # TranscriptResult.is_likely_speech requires no_speech_prob <= 0.6 and
@@ -220,6 +220,18 @@ class GoesSilentAfterFirstChunkAudioSource:
         return None
 
 
+def test_matches_quit_phrase_uses_word_boundaries_not_substring():
+    """M4: a plain substring check would wrongly match "bye" inside
+    "goodbye" or "maybe", and would wrongly end a call on "don't say
+    goodbye yet" for a configured quit phrase of "bye" alone (since "bye"
+    is a substring of "goodbye" there, with no word boundary before it)."""
+    assert _matches_quit_phrase("don't say goodbye yet", ["bye"]) is False
+    assert _matches_quit_phrase("maybe later", ["bye"]) is False
+    assert _matches_quit_phrase("bye", ["bye"]) is True
+    assert _matches_quit_phrase("ok, bye then", ["bye"]) is True
+    assert _matches_quit_phrase("goodbye", ["goodbye"]) is True
+
+
 @pytest.mark.asyncio
 async def test_quit_phrase_ends_session():
     source = ScriptedAudioSource(transcripts=["goodbye"])
@@ -310,6 +322,28 @@ async def test_unclear_permission_answer_reprompts_then_resolves_normally():
     )
     assert agent.last_tool_decision is True
     assert any("didn't catch" in spoken for spoken in mouth.spoken)
+    assert result.status == "quit_phrase"
+
+
+@pytest.mark.asyncio
+async def test_single_non_speech_chunk_does_not_end_call_before_full_silence_window():
+    """I7: a single non-speech/noise chunk partway through the silence
+    window must not end the call by itself. Real speech arriving
+    afterward, still within the window, must let the call continue
+    normally (here: reach and match the quit phrase) rather than having
+    already hung up on the first non-speech chunk."""
+    source = ScriptedAudioSource(transcripts=["noise", "goodbye"])
+    ears = FakeEars(transcripts=["", "goodbye"])  # "" => not likely speech
+    result = await run_call_session(
+        FakeAgent(),
+        ears,
+        FakeMouth(),
+        source,
+        FakeAudioSink(),
+        quit_phrases=["goodbye"],
+        silence_timeout_s=30,
+        max_call_length_s=1800,
+    )
     assert result.status == "quit_phrase"
 
 

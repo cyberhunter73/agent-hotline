@@ -22,3 +22,19 @@ def test_non_speech_transcript_denies():
 
 def test_timeout_with_no_transcript_denies():
     assert evaluate_answer(None) == PermissionAnswer.DENY
+
+
+def test_rising_intonation_yes_question_is_unclear_not_approve():
+    """M3: Whisper's rising-intonation transcription of "yes...?" (a caller
+    thinking out loud, not committing) is not consent — must reprompt, not
+    approve."""
+    assert evaluate_answer(TranscriptResult("yes?", 0.05, -0.3)) == PermissionAnswer.UNCLEAR
+    assert evaluate_answer(TranscriptResult("Yes...?", 0.05, -0.3)) == PermissionAnswer.UNCLEAR
+
+
+def test_empty_transcript_with_high_speech_likelihood_is_unclear_not_approve():
+    """Task 3's already-deferred missing test: an empty transcript that
+    `ears` nonetheless scored as likely speech (low no_speech_prob, high
+    avg_logprob) must never resolve to APPROVE — there is no "yes" in it."""
+    result = evaluate_answer(TranscriptResult("", 0.05, -0.3))
+    assert result == PermissionAnswer.UNCLEAR
