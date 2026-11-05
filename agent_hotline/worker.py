@@ -89,6 +89,7 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Protocol
 
 from agent_hotline.agents.claude_agent_sdk import ClaudeAgentSdkBackend
@@ -140,19 +141,37 @@ async def handle_inbound_job(
     returns `None`.
 
     Allowed: calls `run_session()` and returns its `CallResult` (or lets
-    its exception propagate), and in BOTH cases always attempts
-    `participant.remove()` in a `finally` block first. That removal
-    attempt has its own `try`/`except Exception`, logged and swallowed: a
-    failure removing the SIP participant must never propagate out of this
-    function (it must never crash the worker process, which would take
-    down every other in-flight call) and must never suppress or replace
-    whatever `run_session()` itself returned or raised.
-    """
-    if not inbound_gate.is_allowed(caller_number):
-        await play_brush_off()
-        return None
+    its exception propagate).
 
+    I1 fix: BOTH branches now go through the SAME `finally`-block cleanup
+    guarantee — `participant.remove()` is always attempted, on every path,
+    not just the allowed one. A prior version of this function only wrapped
+    the allowed branch, so a rejected caller's SIP participant was never
+    removed at all (and, since `play_brush_off()` was called with no
+    isolation of its own, a failure there escaped with zero cleanup too).
+    This matches what the module docstring and README.md always claimed,
+    but had not actually implemented. `participant.remove()`'s own
+    `try`/`except Exception`, logged and swallowed, is the entire
+    enforcement of that guarantee: a failure removing the SIP participant
+    must never propagate out of this function (it must never crash the
+    worker process, which would take down every other in-flight call) and
+    must never suppress or replace whatever the allowed/disallowed branch
+    itself returned or raised. `play_brush_off()`'s own failure is isolated
+    the same way, for the same reason: a failure declining a caller must
+    not skip removing them from the room either.
+    """
     try:
+        if not inbound_gate.is_allowed(caller_number):
+            try:
+                await play_brush_off()
+            except Exception:
+                logger.exception(
+                    "play_brush_off() failed for disallowed caller %r; "
+                    "continuing without crashing the worker",
+                    caller_number,
+                )
+            return None
+
         return await run_session()
     finally:
         try:
@@ -316,7 +335,23 @@ async def entrypoint(ctx: "JobContext") -> None:
     async def play_brush_off() -> None:
         await _play_brush_off(mouth, audio_sink)
 
-    await handle_inbound_job(caller_number, inbound_gate, run_session, participant, play_brush_off)
+    # I2: a per-call record, logged rather than discarded. Not the full
+    # transcript logging the spec describes (a documented, disclosed gap —
+    # see README.md/SETUP.md), but enough to materially satisfy "per-call
+    # logging" for everything except the transcript itself: who called,
+    # whether they were allowed, which direction, when, and how it ended.
+    start_time = datetime.now(timezone.utc)
+    allowed = inbound_gate.is_allowed(caller_number)
+    result = await handle_inbound_job(caller_number, inbound_gate, run_session, participant, play_brush_off)
+    end_time = datetime.now(timezone.utc)
+    logger.info(
+        "call record: direction=inbound caller=%r allowed=%s start=%s end=%s status=%s",
+        caller_number,
+        allowed,
+        start_time.isoformat(),
+        end_time.isoformat(),
+        result.status if result is not None else "rejected",
+    )
 
 
 def _outbound_trunk_id() -> str:

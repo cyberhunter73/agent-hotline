@@ -74,6 +74,49 @@ async def test_disallowed_caller_gets_brush_off_no_session():
 
 
 @pytest.mark.asyncio
+async def test_disallowed_caller_participant_removed():
+    """I1: a rejected caller's SIP participant must still be removed from
+    the room — a prior version of this function only wrapped the allowed
+    branch in the removal `finally`, so a disallowed caller's PSTN leg was
+    never hung up at all."""
+    gate = InboundGate(allowed_numbers=["+15551234567"])
+    participant = FakeParticipant()
+
+    async def run_session():
+        raise AssertionError("must not be called")
+
+    async def brush_off():
+        pass
+
+    result = await handle_inbound_job("+15559999999", gate, run_session, participant, brush_off)
+    assert result is None
+    assert participant.removed is True
+
+
+@pytest.mark.asyncio
+async def test_brush_off_failure_still_removes_participant(caplog):
+    """I1: a failure inside play_brush_off() must be isolated the same way
+    a participant.remove() failure is — it must not crash the worker and
+    must not skip removing the disallowed caller's participant."""
+    import logging
+
+    gate = InboundGate(allowed_numbers=["+15551234567"])
+    participant = FakeParticipant()
+
+    async def run_session():
+        raise AssertionError("must not be called")
+
+    async def brush_off():
+        raise RuntimeError("brush-off failed")
+
+    with caplog.at_level(logging.ERROR):
+        result = await handle_inbound_job("+15559999999", gate, run_session, participant, brush_off)
+    assert result is None
+    assert participant.removed is True
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_allowed_caller_runs_session_and_removes_participant():
     gate = InboundGate(allowed_numbers=["+15551234567"])
     participant = FakeParticipant()

@@ -38,6 +38,16 @@ never completed.
 `except Exception` branch and come out as `"error"` (see lesson #5 in the
 plan this task implements).
 
+I3 fix: `max_call_length_s` is enforced two ways now, not one. The
+between-read/between-turn `time_exhausted()` check (original) is kept as
+defense in depth, but it only ever fires at specific checkpoints — it could
+never catch a hang anywhere else (an agent turn that never yields, a stuck
+`mouth.speak()`, a stuck `audio_sink.send_chunk()`). The whole body of this
+function now also runs inside `asyncio.timeout(max_call_length_s)`, which
+bounds a hang ANYWHERE inside it and raises `TimeoutError` at the `async
+with` boundary when the deadline passes, mapped to the same
+`CallResult("max_length")`.
+
 A caller turn that produces zero agent events (no `TextReply`, no
 `ToolUseRequest` at all) is NOT treated as the call ending. `AgentEvent`
 (agents/base.py) has no signal by which the agent can say "I'm ending this
@@ -60,6 +70,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -68,6 +79,8 @@ from agent_hotline.agents.base import AgentBackend, TextReply, ToolUseRequest
 from agent_hotline.ears import Ears
 from agent_hotline.mouth import Mouth
 from agent_hotline.permission_gate import PermissionAnswer, evaluate_answer
+
+logger = logging.getLogger(__name__)
 
 CallStatus = Literal["completed", "quit_phrase", "silence_timeout", "max_length", "cancelled", "error"]
 
@@ -104,39 +117,58 @@ async def run_call_session(
 
     session_started = False
     try:
-        await agent.start_session()
-        session_started = True
+        # I3: max_call_length_s must be a hard cap, not just a cap that is
+        # only checked between reads/turns (time_exhausted(), kept below as
+        # defense in depth). Wrapping the whole body in asyncio.timeout
+        # bounds a hang ANYWHERE inside a turn — a stuck agent reply, a
+        # stuck mouth.speak(), a stuck audio_sink.send_chunk() — not just
+        # the gaps between them.
+        async with asyncio.timeout(max_call_length_s):
+            await agent.start_session()
+            session_started = True
 
-        while True:
-            if time_exhausted():
-                return CallResult(status="max_length")
+            while True:
+                if time_exhausted():
+                    return CallResult(status="max_length")
 
-            chunk = await _receive_with_timeout(audio_source, silence_timeout_s)
-            if chunk is None:
-                return CallResult(status="silence_timeout")
+                chunk = await _receive_with_timeout(audio_source, silence_timeout_s)
+                if chunk is None:
+                    return CallResult(status="silence_timeout")
 
-            transcript = await ears.listen(chunk)
-            if not transcript.is_likely_speech:
-                return CallResult(status="silence_timeout")
+                transcript = await ears.listen(chunk)
+                if not transcript.is_likely_speech:
+                    return CallResult(status="silence_timeout")
 
-            if _matches_quit_phrase(transcript.text, quit_phrases):
-                return CallResult(status="quit_phrase")
+                if _matches_quit_phrase(transcript.text, quit_phrases):
+                    return CallResult(status="quit_phrase")
 
-            await _drive_agent_turn(
-                agent=agent,
-                text=transcript.text,
-                mouth=mouth,
-                ears=ears,
-                audio_source=audio_source,
-                audio_sink=audio_sink,
-                silence_timeout_s=silence_timeout_s,
-                time_exhausted=time_exhausted,
-            )
-            # A turn producing zero agent events is not an end-of-call
-            # signal (see module docstring) — just go back to listening.
+                await _drive_agent_turn(
+                    agent=agent,
+                    text=transcript.text,
+                    mouth=mouth,
+                    ears=ears,
+                    audio_source=audio_source,
+                    audio_sink=audio_sink,
+                    silence_timeout_s=silence_timeout_s,
+                    time_exhausted=time_exhausted,
+                )
+                # A turn producing zero agent events is not an end-of-call
+                # signal (see module docstring) — just go back to listening.
+    except TimeoutError:
+        # Raised by the asyncio.timeout block above when max_call_length_s
+        # elapses anywhere inside it — including mid-turn, not just at a
+        # between-read/between-turn check.
+        return CallResult(status="max_length")
     except asyncio.CancelledError:
+        # I2: a different, expected failure mode from a generic error (e.g.
+        # worker shutdown) — logged at warning, not silently nothing, and
+        # never reclassified as "error".
+        logger.warning("call session cancelled (worker shutdown or external cancellation)")
         return CallResult(status="cancelled")
     except Exception:
+        # I2: a call error must not vanish silently — log it before
+        # returning so it is visible anywhere other than this return value.
+        logger.exception("call session ended with an unexpected error")
         return CallResult(status="error")
     finally:
         if session_started:

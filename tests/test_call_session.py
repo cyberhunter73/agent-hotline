@@ -183,6 +183,28 @@ class CancellingAudioSource:
         raise asyncio.CancelledError()
 
 
+class HangingMidTurnAgent:
+    """Stands in for `AgentBackend` whose `send_text()` hangs forever
+    mid-turn — never yields an event and never returns on its own. Used to
+    prove `max_call_length_s` bounds a hang INSIDE a turn (an agent reply
+    that never completes), not just the gaps between reads/turns the
+    original between-checkpoints-only enforcement relied on."""
+
+    async def start_session(self) -> None:
+        pass
+
+    async def send_text(self, text: str):
+        await asyncio.sleep(99999)
+        if False:  # pragma: no cover - keeps this an async generator
+            yield
+
+    async def resolve_tool_use(self, approved: bool) -> None:
+        pass
+
+    async def end_session(self) -> None:
+        pass
+
+
 class GoesSilentAfterFirstChunkAudioSource:
     """Returns exactly one real chunk, then genuine silence (None) forever
     after. Used to prove a permission-answer read that gets nothing back AT
@@ -289,6 +311,31 @@ async def test_unclear_permission_answer_reprompts_then_resolves_normally():
     assert agent.last_tool_decision is True
     assert any("didn't catch" in spoken for spoken in mouth.spoken)
     assert result.status == "quit_phrase"
+
+
+@pytest.mark.asyncio
+async def test_hang_inside_a_turn_is_bounded_by_max_call_length_s():
+    """I3: a hang anywhere inside a turn (here: the agent's send_text()
+    never completing) must still be bounded by max_call_length_s, not just
+    a hang between reads/turns. Wrapped in asyncio.wait_for as a test-level
+    safety net: if this regresses, the test fails fast instead of hanging
+    the whole suite."""
+    agent = HangingMidTurnAgent()
+    source = ScriptedAudioSource(transcripts=["hello"])
+    result = await asyncio.wait_for(
+        run_call_session(
+            agent,
+            FakeEars(transcripts=["hello"]),
+            FakeMouth(),
+            source,
+            FakeAudioSink(),
+            quit_phrases=["goodbye"],
+            silence_timeout_s=30,
+            max_call_length_s=0.05,
+        ),
+        timeout=5,
+    )
+    assert result.status == "max_length"
 
 
 @pytest.mark.asyncio
