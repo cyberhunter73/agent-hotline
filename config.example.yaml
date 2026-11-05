@@ -29,8 +29,14 @@ outbound:
   # Outbound calls are OFF unless explicitly enabled. Absent means false.
   enabled: false
   destination_number: "+15557654321"
-  # Rolling 24-hour cap, enforced by the worker itself.
+  # Rolling 24-hour cap, enforced by the worker itself. Persisted to a sqlite
+  # database (history_path below) so the cap holds across separate
+  # `python -m agent_hotline.worker notify ...` invocations and restarts.
   max_calls_per_24h: 3
+  # Where the persistent outbound call-history store lives. Defaults to
+  # ~/.agent-hotline/outbound_calls.sqlite3 if omitted. The parent directory
+  # is created automatically.
+  history_path: "~/.agent-hotline/outbound_calls.sqlite3"
   quiet_hours:
     start: "22:00"
     end: "07:00"

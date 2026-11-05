@@ -57,6 +57,9 @@ class OutboundConfig:
     max_calls_per_24h: int
     quiet_hours: QuietHours
     event_types: dict[str, EventTypeConfig] = field(default_factory=dict)
+    # C2: where the persistent (sqlite) outbound call-history store lives,
+    # so max_calls_per_24h holds across separate CLI invocations.
+    history_path: str = "~/.agent-hotline/outbound_calls.sqlite3"
 
 
 @dataclass
@@ -146,6 +149,7 @@ def _parse_outbound(data: dict[str, Any]) -> OutboundConfig:
         max_calls_per_24h=int(section.get("max_calls_per_24h", 1)),
         quiet_hours=quiet_hours,
         event_types=event_types,
+        history_path=str(section.get("history_path", "~/.agent-hotline/outbound_calls.sqlite3")),
     )
 
 

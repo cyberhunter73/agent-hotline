@@ -97,7 +97,7 @@ from agent_hotline.config import Config, load_config
 from agent_hotline.ears import make_ears
 from agent_hotline.inbound import InboundGate
 from agent_hotline.mouth import make_mouth
-from agent_hotline.outbound import OutboundNotifier
+from agent_hotline.outbound import OutboundNotifier, SqliteCallHistoryStore
 from agent_hotline.outbound_gate import OutboundDecision, OutboundGate
 
 if TYPE_CHECKING:  # pragma: no cover - type-checking only, never imported at runtime
@@ -345,8 +345,23 @@ def build_outbound_notifier(config: Config, clock=None) -> OutboundNotifier:
     `LiveKitAPI().sip.create_sip_participant(...)`, wrapped here to satisfy
     `outbound.SipClient`'s `create_participant` shape. Imported lazily so
     importing this module never requires the real `livekit-agents` SDK.
+
+    I4: the real clock used here (when `clock` is not overridden by a
+    caller, e.g. a test) returns a timezone-aware `datetime` in
+    `config.outbound.quiet_hours.timezone`, not the host's naive local
+    clock — so quiet hours are evaluated against the configured timezone
+    regardless of what timezone the worker process itself happens to run
+    in. The SAME clock callable is passed to both the `OutboundGate` (its
+    quiet-hours/rate-limit math) and the `OutboundNotifier` (its recorded
+    call-history timestamps), so the two can never disagree or mix aware
+    and naive datetimes.
+
+    C2: the call-history store is a real `SqliteCallHistoryStore` rooted at
+    `config.outbound.history_path`, so `max_calls_per_24h` holds across
+    separate `python -m agent_hotline.worker notify ...` invocations, not
+    just within one process's lifetime.
     """
-    import datetime as _datetime
+    from zoneinfo import ZoneInfo
 
     from livekit import api  # type: ignore[import-not-found]
 
@@ -364,12 +379,22 @@ def build_outbound_notifier(config: Config, clock=None) -> OutboundNotifier:
             finally:
                 await lk_api.aclose()
 
-    gate = OutboundGate(config.outbound, clock=clock or _datetime.datetime.now)
+    def _tz_aware_clock():
+        import datetime as _datetime
+
+        return _datetime.datetime.now(ZoneInfo(config.outbound.quiet_hours.timezone))
+
+    real_clock = clock or _tz_aware_clock
+
+    gate = OutboundGate(config.outbound, clock=real_clock)
+    history_store = SqliteCallHistoryStore(config.outbound.history_path)
     return OutboundNotifier(
         gate=gate,
         sip_client=_LiveKitSipClient(),
         config=config.outbound,
+        history_store=history_store,
         trunk_id=_outbound_trunk_id(),
+        clock=real_clock,
     )
 
 
